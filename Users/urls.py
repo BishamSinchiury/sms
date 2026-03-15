@@ -14,6 +14,7 @@ from Users.views.sys_auth_views import (
     SysAdminLoginView,
     SysAdminOTPVerifyView,
     SysAdminLogoutView,
+    SysAdminMeView,
 )
 
 urlpatterns = [
@@ -24,4 +25,6 @@ urlpatterns = [
     path("sys/auth/verify-otp/",  SysAdminOTPVerifyView.as_view(), name="sys-auth-verify-otp"),
     # Logout: flush session + mark audit record inactive
     path("sys/auth/logout/",      SysAdminLogoutView.as_view(),    name="sys-auth-logout"),
+    # Me: check active session cookie → returns identity (used on page refresh)
+    path("sys/auth/me/",          SysAdminMeView.as_view(),        name="sys-auth-me"),
 ]

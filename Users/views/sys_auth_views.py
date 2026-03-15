@@ -409,7 +409,64 @@ class SysAdminOTPVerifyView(APIView):
 
 
 # ─────────────────────────────────────────────────────────────
-# View 3 — Logout: invalidate session + audit record
+# View 3 — Me: return identity from active session (page-refresh)
+# ─────────────────────────────────────────────────────────────
+
+class SysAdminMeView(APIView):
+    """
+    GET /api/sys/auth/me/
+
+    Called by the frontend on every page load to check whether the browser
+    already holds a valid system-admin session cookie (set after OTP verify).
+
+    No credentials required — Django reads the session cookie automatically.
+    Returns basic identity data so the frontend can restore auth state
+    without forcing the admin to re-login after a hard refresh (F5).
+
+    Responses
+    ---------
+    200  — Active session found. Returns user_id, email, full_name, org_slug.
+    401  — No session or session does not have is_sys_admin=True.
+    """
+    authentication_classes = []
+    permission_classes     = []
+
+    def get(self, request):
+        if not request.session.get("is_sys_admin"):
+            return Response(
+                {"detail": "No active system admin session."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        user_id = request.session.get("user_id")
+        org_slug = request.session.get("org_slug")
+
+        # Fetch fresh user data so the response is always up-to-date
+        try:
+            user = User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            # Session references a deleted user — treat as invalid
+            request.session.flush()
+            return Response(
+                {"detail": "Session invalid. Please log in again."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        logger.debug("SysAdmin /me/ called for user %s (org: %s)", user.email, org_slug)
+
+        return Response(
+            {
+                "id":        user.pk,
+                "email":     user.email,
+                "full_name": user.full_name,
+                "org_slug":  org_slug,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+# ─────────────────────────────────────────────────────────────
+# View 4 — Logout: invalidate session + audit record
 # ─────────────────────────────────────────────────────────────
 
 class SysAdminLogoutView(APIView):
