@@ -3,3 +3,4 @@ Django==6.0.3
 psycopg2-binary==2.9.11
 python-decouple==3.8
 sqlparse==0.5.5
+django-cors-headers==4.7.0
