@@ -11,6 +11,7 @@ from .organization import Organization
 from .domain import OrgDomain
 from .profile import OrganizationProfile, SchoolType
 from .legal import OrganizationLegal, AccreditationStatus
+from .sub_organization import SubOrganization, SubOrgType
 
 __all__ = [
     "Organization",
@@ -19,4 +20,7 @@ __all__ = [
     "SchoolType",
     "OrganizationLegal",
     "AccreditationStatus",
+    "SubOrganization",
+    "SubOrgType",
 ]
+

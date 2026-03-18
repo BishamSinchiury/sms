@@ -34,6 +34,7 @@ from django.utils import timezone
 from core.models import TimeStampedModel
 from .user import User
 from Orgs.models import Organization
+from Orgs.models.sub_organization import SubOrganization
 from .roles import OrgRole
 
 
@@ -75,6 +76,17 @@ class OrgMembership(TimeStampedModel):
         on_delete=models.PROTECT,
         related_name="memberships",
         help_text="The user's role within this org. Must belong to the same org.",
+    )
+    sub_org = models.ForeignKey(
+        SubOrganization,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="members",
+        help_text=(
+            "Optional scoping to a sub-organization (e.g. a department or campus). "
+            "NULL = member of the parent org with no sub-org restriction."
+        ),
     )
 
     status = models.CharField(
