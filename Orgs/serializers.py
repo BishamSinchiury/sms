@@ -99,3 +99,52 @@ class SubOrganizationWriteSerializer(serializers.ModelSerializer):
                 f"A sub-organization with code '{value}' already exists in this org."
             )
         return value
+
+from .models.activity_log import OrgActivityLog
+
+class OrgActivityLogSerializer(serializers.ModelSerializer):
+    """
+    Serializer for the append-only OrgActivityLog.
+    Masks IP addresses by default unless ?expand=true is passed.
+    Extracts the last 8 chars of a session_id.
+    """
+    actor = serializers.SerializerMethodField()
+    session_id = serializers.SerializerMethodField()
+    ip_address = serializers.SerializerMethodField()
+    ip_address_full = serializers.SerializerMethodField()
+
+    class Meta:
+        model = OrgActivityLog
+        fields = [
+            'id', 'category', 'severity', 'action', 'detail',
+            'created_at', 'actor', 'session_id', 'ip_address', 'ip_address_full',
+            'user_agent'
+        ]
+        read_only_fields = fields
+
+    def get_actor(self, obj):
+        return {
+            "id": obj.actor_id,
+            "full_name": obj.actor_name,
+            "email": obj.actor_email
+        }
+
+    def get_session_id(self, obj):
+        if not obj.session_id:
+            return ""
+        return obj.session_id[-8:]
+
+    def get_ip_address(self, obj):
+        if not obj.ip_address:
+            return ""
+        parts = obj.ip_address.split('.')
+        if len(parts) == 4:
+            return f"{parts[0]}.{parts[1]}.*.*"
+        return f"{obj.ip_address[:4]}***"
+
+    def get_ip_address_full(self, obj):
+        request = self.context.get('request')
+        if request and request.query_params.get('expand') == 'true':
+            return obj.ip_address
+        return None
+

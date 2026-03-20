@@ -14,11 +14,11 @@ What this command does (in a single atomic transaction):
 
 Usage:
     python manage.py create_org_and_admin \\
-        --slug "greenwood-high" \\
-        --email "admin@greenwood.edu" \\
-        --password "StrongPass123!" \\
-        --first-name "Jane" \\
-        --last-name "Doe"
+        --slug "bisham-org" \\
+        --email "bishamsinchiury1116@gmail.com" \\
+        --password "Bisham@0411" \\
+        --first-name "Bisham" \\
+        --last-name "Sinchiury"
 
     # Password can be omitted — the command will prompt for it interactively.
 
@@ -176,28 +176,37 @@ class Command(BaseCommand):
         OrganizationLegal.objects.create(org=org)
         self.stdout.write("  Created blank OrganizationProfile and OrganizationLegal.")
 
-        # 3. Seed system OrgRoles
+        # 4. Seed system OrgRoles
         self.stdout.write("  Seeding system roles ...")
         sys_admin_role = OrgRole.objects.create(
-            org=org,
-            name=SYSTEM_ADMIN_ROLE,
-            is_system_role=True,
+            org=org, name=SYSTEM_ADMIN_ROLE, is_system_role=True, role_type="system_admin",
             description="Reserved for the organization's designated system administrator.",
         )
         OrgRole.objects.create(
-            org=org,
-            name=ADMIN_ROLE,
-            is_system_role=True,
+            org=org, name=ADMIN_ROLE, is_system_role=True, role_type="admin",
             description="Administrative role. Can manage users and most settings.",
         )
         OrgRole.objects.create(
-            org=org,
-            name=MEMBER_ROLE,
-            is_system_role=True,
+            org=org, name=MEMBER_ROLE, is_system_role=True, role_type="staff",
             description="Base role for all organization members.",
         )
 
-        # 4. Create or fetch the User
+        # 4.5 Seed default custom roles
+        self.stdout.write("  Seeding default custom roles ...")
+        default_roles = [
+            {"name": "Owner", "role_type": "owner", "description": "Owner of the organization."},
+            {"name": "Student", "role_type": "student", "description": "General student role."},
+            {"name": "Teacher", "role_type": "teacher", "description": "Faculty member role."},
+            {"name": "Staff", "role_type": "staff", "description": "Administrative staff role."},
+            {"name": "Parent", "role_type": "parent", "description": "Guardian of a student."},
+        ]
+        for role_data in default_roles:
+            OrgRole.objects.create(
+                org=org, name=role_data["name"], is_system_role=False,
+                role_type=role_data["role_type"], description=role_data["description"]
+            )
+
+        # 5. Create or fetch the User
         user, created = User.objects.get_or_create(
             email=email,
             defaults={

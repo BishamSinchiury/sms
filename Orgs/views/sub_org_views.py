@@ -20,6 +20,7 @@ from Orgs.serializers import SubOrganizationSerializer, SubOrganizationWriteSeri
 
 # Reuse the shared auth helper from the parent views module
 from Orgs.views import _get_sys_admin_context
+from Orgs.utils.logger import log_org_activity
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,10 @@ class SubOrgListCreateView(APIView):
         )
         if serializer.is_valid():
             sub_org = serializer.save(parent_org=org)
+            log_org_activity(
+                org=org, actor=ctx.get("user"), category="system", severity="info",
+                action=f"Sub-organization '{sub_org.name}' created", request=request
+            )
             logger.info(
                 "SubOrg created: org='%s' code='%s' by user_id=%s",
                 org.slug, sub_org.code, request.session.get("user_id"),
@@ -134,6 +139,10 @@ class SubOrgDetailView(APIView):
         org = ctx["org"]
         sub_org.is_active = False
         sub_org.save(update_fields=["is_active", "updated_at"])
+        log_org_activity(
+            org=org, actor=ctx.get("user"), category="system", severity="warning",
+            action=f"Sub-organization '{code}' deactivated", request=request
+        )
         logger.info(
             "SubOrg deactivated: org='%s' code='%s' by user_id=%s",
             org.slug, code, request.session.get("user_id"),

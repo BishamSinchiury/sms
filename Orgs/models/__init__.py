@@ -12,6 +12,7 @@ from .domain import OrgDomain
 from .profile import OrganizationProfile, SchoolType
 from .legal import OrganizationLegal, AccreditationStatus
 from .sub_organization import SubOrganization, SubOrgType
+from .activity_log import OrgActivityLog
 
 __all__ = [
     "Organization",
@@ -22,5 +23,6 @@ __all__ = [
     "AccreditationStatus",
     "SubOrganization",
     "SubOrgType",
+    "OrgActivityLog",
 ]
 

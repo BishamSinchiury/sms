@@ -15,6 +15,8 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from Orgs.utils.logger import log_org_activity
+
 from Users.models.membership import OrgMembership, MembershipStatus
 from Orgs.models.organization import Organization
 from Orgs.models.profile import OrganizationProfile
@@ -151,7 +153,28 @@ class OrgProfileMeView(APIView):
             context={"request": request},
         )
         if serializer.is_valid():
+            old_values = {field: getattr(profile, field, None) for field in serializer.validated_data}
             serializer.save()
+            
+            changed_fields = {}
+            for field, new_val in serializer.validated_data.items():
+                old_val = old_values[field]
+                if str(old_val) != str(new_val):
+                    changed_fields[field] = {
+                        "old_value": str(old_val),
+                        "new_value": str(new_val)
+                    }
+
+            log_org_activity(
+                org=org,
+                actor=ctx.get("user"),
+                category="org_changes",
+                severity="info",
+                action="Organization profile updated",
+                detail={"fields_changed": changed_fields} if changed_fields else {},
+                request=request
+            )
+
             logger.info(
                 "OrgProfile updated: org='%s' by user_id=%s",
                 org.slug, request.session.get("user_id"),

@@ -11,6 +11,7 @@ from .user import User, SuperUser
 from .roles import OrgRole, RolePermission, FeatureFlag
 from .membership import OrgMembership, MembershipStatus
 from .auth_session import SystemAdminSession, RefreshTokenRecord
+from .person import Person, IdentityDocument, Guardian
 
 __all__ = [
     
@@ -30,4 +31,9 @@ __all__ = [
     # Auth / Sessions
     "SystemAdminSession",
     "RefreshTokenRecord",
+
+    # Persons & Profiles
+    "Person",
+    "IdentityDocument",
+    "Guardian",
 ]

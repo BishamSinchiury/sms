@@ -40,6 +40,7 @@ from .roles import OrgRole
 
 class MembershipStatus(models.TextChoices):
     PENDING   = "pending",   "Pending Approval"
+    WAITING_APPROVAL = "waiting_approval", "Waiting for Approval"
     ACTIVE    = "active",    "Active"
     SUSPENDED = "suspended", "Suspended"
     REJECTED  = "rejected",  "Rejected"

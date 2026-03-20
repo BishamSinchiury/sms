@@ -64,6 +64,9 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from Orgs.models import Organization
+from Orgs.utils.logger import log_org_activity
+
 from Users.models.auth_session import SystemAdminSession
 from Users.models.membership import OrgMembership, MembershipStatus
 from Users.serializers.sys_auth_serializers import (
@@ -263,6 +266,11 @@ class SysAdminLoginView(APIView):
         # ── 2. Check password ─────────────────────────────────
         if not user.check_password(password):
             logger.info("SysAdmin login: bad password for %s", email)
+            try:
+                mem = OrgMembership.objects.select_related("org").get(user=user, is_system_admin=True, status=MembershipStatus.ACTIVE)
+                log_org_activity(org=mem.org, actor=user, category="auth", severity="warning", action="Admin login failed — invalid credentials", request=request)
+            except OrgMembership.DoesNotExist:
+                pass
             return Response(GENERIC_ERROR, status=status.HTTP_401_UNAUTHORIZED)
 
         # ── 3. Confirm user is an active system admin ─────────
@@ -296,6 +304,7 @@ class SysAdminLoginView(APIView):
         # ── 6. Dispatch OTP ───────────────────────────────────
         _dispatch_otp(email, otp)
 
+        log_org_activity(org=membership.org, actor=user, category="auth", severity="info", action="Admin login successful", request=request)
         logger.info("SysAdmin OTP issued for %s (org: %s)", email, membership.org.slug)
 
         return Response(
@@ -337,6 +346,9 @@ class SysAdminOTPVerifyView(APIView):
 
         # ── 1. Fetch cached OTP (None if expired/never issued) ──
         cached_otp = OTP_CACHE.get(cache_key)
+        
+
+        
         if cached_otp is None:
             return Response(
                 {"detail": "OTP has expired or was never issued. Please log in again."},
@@ -346,6 +358,12 @@ class SysAdminOTPVerifyView(APIView):
         # ── 2. Constant-time comparison (prevent timing attacks) ──
         if not hmac.compare_digest(str(cached_otp), str(otp_input)):
             logger.warning("SysAdmin OTP mismatch for email: %s", email)
+            try:
+                user = User.objects.get(email=email)
+                mem = OrgMembership.objects.select_related("org").get(user=user, is_system_admin=True, status=MembershipStatus.ACTIVE)
+                log_org_activity(org=mem.org, actor=user, category="auth", severity="warning", action="OTP verification failed", request=request)
+            except Exception:
+                pass
             return Response(
                 {"detail": "Invalid OTP. Please try again."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -388,6 +406,8 @@ class SysAdminOTPVerifyView(APIView):
             user_agent  = _get_user_agent(request),
             is_active   = True,
         )
+
+        log_org_activity(org=org, actor=user, category="auth", severity="info", action="OTP verified — session created", request=request)
 
         logger.info(
             "SysAdmin session created for %s (org: %s, session: %s)",
@@ -499,6 +519,17 @@ class SysAdminLogoutView(APIView):
                 revoked_at   = timezone.now(),
                 revoked_reason = "User initiated logout.",
             )
+
+        org_slug = request.session.get("org_slug")
+        user_id = request.session.get("user_id")
+
+        if org_slug and user_id:
+            try:
+                org = Organization.objects.get(slug=org_slug)
+                user = User.objects.get(pk=user_id)
+                log_org_activity(org=org, actor=user, category="auth", severity="info", action="Admin session ended", request=request)
+            except Exception:
+                pass
 
         # ── Flush the Django session ───────────────────────────
         request.session.flush()

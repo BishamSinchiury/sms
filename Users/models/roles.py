@@ -23,6 +23,16 @@ from Orgs.models import Organization
 # Choices & Constants
 # ─────────────────────────────────────────────
 
+class CoreRoleType(models.TextChoices):
+    TEACHER  = "teacher",  "Teacher"
+    STUDENT  = "student",  "Student"
+    STAFF    = "staff",    "Staff"
+    ADMIN    = "admin",    "Admin"
+    OWNER    = "owner",    "Owner"
+    PARENT   = "parent",   "Parent"
+    VENDOR   = "vendor",   "Vendor"
+
+
 class PermissionAction(models.TextChoices):
     VIEW   = "view",   "View"
     CREATE = "create", "Create"
@@ -61,6 +71,12 @@ class OrgRole(TimeStampedModel):
     name = models.CharField(
         max_length=100,
         help_text="Human-readable role name. e.g. 'Teacher', 'Student', 'admin'",
+    )
+    role_type = models.CharField(
+        max_length=20,
+        choices=CoreRoleType.choices,
+        default=CoreRoleType.STAFF,
+        help_text="Core classification driving permissions and profile fields."
     )
     is_system_role = models.BooleanField(
         default=False,
@@ -175,3 +191,54 @@ class FeatureFlag(TimeStampedModel):
     def __str__(self):
         status = "ON" if self.enabled else "OFF"
         return f"{self.role} | {self.flag_key} [{status}]"
+
+# ─────────────────────────────────────────────
+# Signals
+# ─────────────────────────────────────────────
+
+DEFAULT_PERMISSIONS = {
+    CoreRoleType.TEACHER: [
+        ("attendance", "view",   True),
+        ("attendance", "create", True),
+        ("attendance", "edit",   True),
+        ("attendance", "delete", False),
+        ("gradebook",  "view",   True),
+        ("gradebook",  "edit",   True),
+        ("reports",    "export", False),
+    ],
+    CoreRoleType.STUDENT: [
+        ("attendance", "view",   True),
+        ("gradebook",  "view",   True),
+        ("reports",    "export", False),
+    ],
+    CoreRoleType.STAFF: [
+        ("attendance", "view",   True),
+    ],
+    CoreRoleType.PARENT: [
+        ("gradebook",  "view",   True),
+        ("attendance", "view",   True),
+    ],
+    CoreRoleType.VENDOR: [],
+    CoreRoleType.ADMIN:  [],   # admin gets permissions separately
+    CoreRoleType.OWNER:  [],
+}
+
+from django.db.models.signals import post_save
+from django.dispatch import receiver
+
+@receiver(post_save, sender=OrgRole)
+def assign_default_permissions(sender, instance, created, **kwargs):
+    if created and not instance.is_system_role:
+        permissions_to_create = []
+        defaults = DEFAULT_PERMISSIONS.get(instance.role_type, [])
+        for module, action, allowed in defaults:
+            permissions_to_create.append(
+                RolePermission(
+                    role=instance,
+                    module=module,
+                    action=action,
+                    allowed=allowed
+                )
+            )
+        if permissions_to_create:
+            RolePermission.objects.bulk_create(permissions_to_create)

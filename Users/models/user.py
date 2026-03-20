@@ -61,6 +61,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     email = models.EmailField(unique=True, db_index=True)
     first_name = models.CharField(max_length=150, blank=True, default="")
     last_name = models.CharField(max_length=150, blank=True, default="")
+    phone_number = models.CharField(max_length=20, blank=True, default="", help_text="Contact phone number.")
 
     is_active = models.BooleanField(
         default=True,
