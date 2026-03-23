@@ -39,7 +39,9 @@ class OrgProfileMeView(APIView):
     Both methods are scoped to the org stored in the session.
     Cross-org access is impossible by design.
     """
-    authentication_classes = []
+    # FIX 12 (BUG 14): Removed authentication_classes = []. Django's default
+    # JWTAuthentication now runs as a safety net. IsSysAdmin still handles
+    # session-based auth via request.session — this just adds a fallback layer.
     permission_classes     = [IsSysAdmin]
 
     def get(self, request):
@@ -111,7 +113,7 @@ class OrgLegalMeView(APIView):
 
     Scoped to the org stored in the session by IsSysAdmin.
     """
-    authentication_classes = []
+    # FIX 12 (BUG 14): Removed authentication_classes = [] — same reasoning as OrgProfileMeView.
     permission_classes     = [IsSysAdmin]
 
     def get(self, request):

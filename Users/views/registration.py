@@ -8,11 +8,18 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
+from django.core.cache import caches  # FIX 1 (BUG 2): to read verified-email gate key
+
 from Orgs.models.organization import Organization
 from Users.models.roles import OrgRole, SYSTEM_ADMIN_ROLE
+from Users.models.membership import MembershipStatus  # FIX 10 (BUG 10): for profile_complete
 from Users.serializers.registration import RegisterRoleAwareSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.conf import settings
+
+# FIX 1 (BUG 2): Use the same OTP cache alias + verified key prefix as auth_views.py.
+OTP_CACHE        = caches["otp"]
+_VERIFIED_PREFIX = "signup_email_verified:"
 
 class RolesListView(generics.ListAPIView):
     """
@@ -41,32 +48,83 @@ class RolesListView(generics.ListAPIView):
         org_slug = request.query_params.get("org", "").strip()
         if not org_slug:
             return Response({"detail": "org query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # FIX 3 (BUG 1): Validate org profile completeness before returning roles.
+        # Previously this check only lived in the dead PublicRolesView (auth_views.py).
+        # Users can now only browse roles for orgs that have completed their setup.
+        try:
+            org = Organization.objects.select_related("profile").get(slug=org_slug, is_active=True)
+        except Organization.DoesNotExist:
+            return Response(
+                {"detail": "Organization not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        profile = getattr(org, "profile", None)
+        if not profile or not profile.name:
+            return Response(
+                {"detail": "This organization has not completed setup. Registration is currently unavailable."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         return super().list(request, *args, **kwargs)
 
 class RegisterWizardView(generics.CreateAPIView):
     """
-    POST /api/auth/register-wizard/
-    (Or overrides /api/auth/register/)
+    POST /api/auth/register/
+    Creates User + OrgMembership + Person in one atomic transaction.
+    Requires prior email OTP verification (SendOTPView → VerifyOTPView).
     """
     permission_classes = [AllowAny]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
     serializer_class = RegisterRoleAwareSerializer
 
     def create(self, request, *args, **kwargs):
+        # FIX 1 (BUG 2): Enforce server-side OTP gate before any validation.
+        # VerifyOTPView writes 'signup_email_verified:{email}' to Redis on success.
+        # Without this check, any caller could POST directly and bypass OTP entirely.
+        raw_email = request.data.get("email", "").lower().strip()
+        if not raw_email:
+            return Response(
+                {"detail": "email is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        verified_key = f"{_VERIFIED_PREFIX}{raw_email}"
+        if not OTP_CACHE.get(verified_key):
+            return Response(
+                {"detail": "Email not verified. Please complete OTP verification first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
-        
+
+        # FIX 1 (BUG 2): Consume the verified-email gate key (single-use).
+        # A verified email cannot be reused to register a second account.
+        OTP_CACHE.delete(verified_key)
+
         # Generate tokens for the new user auto-login
         refresh = RefreshToken.for_user(user)
         access_token = str(refresh.access_token)
         refresh_token = str(refresh)
         membership = getattr(user, "membership", None)
+
+        # FIX 10 (BUG 10): profile_complete now means "user has submitted their
+        # profile" (i.e. membership is no longer PENDING), not just "Person exists".
+        # After registration, status is always PENDING, so this is always False here.
+        # This is correct: the user still needs to fill their profile wizard.
+        profile_complete = (
+            membership.status != MembershipStatus.PENDING
+            if membership else False
+        )
+
         response = Response({
             "message": "Registration received — awaiting approval",
             "access": access_token,
             "user_id": user.id,
-            "profile_complete": hasattr(user, 'person') and user.person is not None,
+            "profile_complete": profile_complete,
             "membership_status": membership.status if membership else None,
             "role_type": membership.role.role_type if membership and membership.role else None,
         }, status=status.HTTP_201_CREATED)

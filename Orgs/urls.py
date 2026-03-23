@@ -3,7 +3,8 @@ from .views import OrgProfileMeView, OrgLegalMeView, OrgOwnerListCreateView, Org
 from .views.sub_org_views import SubOrgListCreateView, SubOrgDetailView
 
 urlpatterns = [
-    path('me/',                 OrgProfileMeView.as_view(),      name='org-profile-me'),
+    # FIX 8 (BUG 5): Removed duplicate path('me/', ...) — was identical to profile/me/
+    # but caused non-deterministic reverse('org-profile-me') and unnecessary attack surface.
     path('profile/me/',         OrgProfileMeView.as_view(),      name='org-profile-me'),
     path('legal/me/',           OrgLegalMeView.as_view(),        name='org-legal-me'),
     path('sub-orgs/',           SubOrgListCreateView.as_view(),  name='sub-org-list-create'),

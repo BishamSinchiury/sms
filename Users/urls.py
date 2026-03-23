@@ -16,7 +16,8 @@ from Users.views.sys_auth_views import (
     SysAdminLogoutView,
     SysAdminMeView,
 )
-from Users.views.auth_views import VerifyEmailView
+# Import the old post-registration verify view + two new pre-registration OTP views
+from Users.views.auth_views import VerifyEmailView, SendOTPView, VerifyOTPView
 from Users.views.user_views import UserProfileUpdateView
 from Users.views.sys_user_views import PendingUsersListView, ApproveUserView, RejectUserView
 from Users.views.registration import RegisterWizardView, RolesListView
@@ -39,17 +40,33 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import AllowAny
+# FIX 9 (BUG 7+18): AuthenticationFailed must be at top-level.
+# Previously imported inside a try-block, causing NameError in the corresponding except clause.
+from rest_framework.exceptions import AuthenticationFailed
 from django.conf import settings
 from django.contrib.auth import get_user_model
+
+from Users.models.membership import MembershipStatus  # FIX 10 (BUG 10)
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
         data = super().validate(attrs)
-        
+
+        # FIX 10 (BUG 10): profile_complete is now based on membership status,
+        # not whether a Person record exists. This makes it meaningful:
+        # False = profile not yet submitted (PENDING), True = submitted (any other status).
+        membership = None
+        membership_status = None
         try:
-            profile_complete = Person.objects.filter(user=self.user).exists()
+            membership = self.user.membership
+            membership_status = membership.status if membership else None
         except Exception:
-            profile_complete = False
+            pass
+
+        profile_complete = (
+            membership_status is not None
+            and membership_status != MembershipStatus.PENDING
+        )
 
         data['user'] = {
             "id": str(self.user.id),
@@ -58,13 +75,12 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             "last_name": self.user.last_name,
             "profile_complete": profile_complete,
         }
-        
+
         try:
-            membership = self.user.membership
+            # FIX 9 (BUG 7+18): AuthenticationFailed is now imported at module top.
             if membership and membership.org and not membership.org.is_active:
-                from rest_framework.exceptions import AuthenticationFailed
                 raise AuthenticationFailed("Your organization is currently inactive.")
-            
+
             data['user']['membership'] = {
                 "status": membership.status,
                 "role_type": membership.role.role_type if membership.role else None,
@@ -143,13 +159,8 @@ class CookieTokenRefreshView(TokenRefreshView):
         except Exception:
             user = None
 
+        # FIX 10 (BUG 10): profile_complete based on membership status, not Person.exists()
         profile_complete = False
-        if user:
-            try:
-                profile_complete = Person.objects.filter(user=user).exists()
-            except Exception:
-                pass
-
         membership_status = None
         role_type = None
         if user:
@@ -157,6 +168,7 @@ class CookieTokenRefreshView(TokenRefreshView):
                 membership = user.membership
                 membership_status = membership.status
                 role_type = membership.role.role_type if membership.role else None
+                profile_complete = membership_status is not None and membership_status != MembershipStatus.PENDING
             except Exception:
                 pass
 
@@ -224,6 +236,9 @@ urlpatterns = [
     path("auth/logout/",          CookieTokenLogoutView.as_view(),     name="token_logout"),
     path("auth/register/",        RegisterWizardView.as_view(),    name="auth-register"),
     path("auth/verify-email/",    VerifyEmailView.as_view(),       name="auth-verify-email"),
+    # Pre-registration OTP flow — Step A: generate + email OTP; Step B: validate + return verified
+    path("auth/send-otp/",        SendOTPView.as_view(),           name="auth-send-otp"),
+    path("auth/verify-otp/",      VerifyOTPView.as_view(),         name="auth-verify-otp"),
     path("auth/roles/",           RolesListView.as_view(),         name="auth-roles"),
 
     # ── General User Profile ─────────────────────────────────────────────

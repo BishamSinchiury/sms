@@ -71,10 +71,12 @@ class PersonSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         ret = super().to_representation(instance)
-        # Inject the extra_data dictionary under the role_type key
         role_type = instance.role_type
-        if role_type and hasattr(self, 'fields') and role_type.lower() in getattr(self.Meta, 'fields', []):
-            ret[role_type.lower()] = instance.extra_data
+        # Explicit allowlist instead of introspecting Meta.fields — simpler and guaranteed
+        # to work even if the write_only DictFields are excluded by super().
+        # Guard extra_data against None so callers always receive a dict, never null.
+        if role_type and role_type.lower() in ['teacher', 'student', 'staff', 'parent', 'vendor']:
+            ret[role_type.lower()] = instance.extra_data or {}
         return ret
 
     def update(self, instance, validated_data):

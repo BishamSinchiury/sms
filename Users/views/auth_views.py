@@ -18,6 +18,17 @@ Registration flow (two-step, with email OTP verification):
     • Verifies with constant-time comparison
     • Sets user.is_active = True
     • Returns 200 → user can now log in
+
+Pre-registration OTP flow (guards RegisterWizardView):
+
+  Step A — POST /api/auth/send-otp/
+    • Sends OTP without creating a user
+
+  Step B — POST /api/auth/verify-otp/
+    • Validates OTP, pops it, then writes a short-lived
+      'signup_email_verified:{email}' key to Redis (600s TTL)
+    • RegisterWizardView checks this key before creating anything
+    • The key is deleted (single-use) once registration completes
 """
 
 import hmac
@@ -41,13 +52,20 @@ from Users.models.user import User
 
 logger = logging.getLogger(__name__)
 
-OTP_CACHE   = caches["otp"]
-OTP_TTL     = 300  # 5 minutes
-_OTP_PREFIX = "signup_otp:"
+OTP_CACHE          = caches["otp"]
+OTP_TTL            = 300   # 5 minutes — OTP validity window
+_OTP_PREFIX        = "signup_otp:"
+_VERIFIED_PREFIX   = "signup_email_verified:"  # FIX 1 (BUG 2): post-OTP gate key
+VERIFIED_TTL       = 600   # 10 minutes — enough to complete the wizard
 
 
 def _otp_key(email: str) -> str:
     return f"{_OTP_PREFIX}{email.lower().strip()}"
+
+
+# FIX 1 (BUG 2): Key written by VerifyOTPView, read+deleted by RegisterWizardView.
+def _verified_key(email: str) -> str:
+    return f"{_VERIFIED_PREFIX}{email.lower().strip()}"
 
 
 def _generate_otp(length: int = 6) -> str:
@@ -124,65 +142,9 @@ def _dispatch_signup_otp(email: str, otp: str, first_name: str = "") -> None:
         logger.error("Failed to send signup OTP to %s: %s", email, exc)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Roles — public, scoped per org
-# ─────────────────────────────────────────────────────────────────────────────
-
-class PublicRoleSerializer(serializers.ModelSerializer):
-    org_name = serializers.CharField(source="org.name", read_only=True)
-
-    class Meta:
-        model  = OrgRole
-        fields = ["id", "name", "description", "org_name", "role_type"]
-
-
-class PublicRolesView(generics.ListAPIView):
-    """
-    GET /api/auth/roles/?org_slug=<slug>
-    Returns only non-system roles for the given org.
-    """
-    permission_classes = [AllowAny]
-    serializer_class   = PublicRoleSerializer
-
-    def get_queryset(self):
-        org_slug = self.request.query_params.get("org_slug", "").strip()
-        if not org_slug:
-            return OrgRole.objects.none()
-        try:
-            org = Organization.objects.get(slug=org_slug, is_active=True)
-        except Organization.DoesNotExist:
-            return OrgRole.objects.none()
-        return OrgRole.objects.filter(
-            org=org, is_system_role=False
-        ).exclude(name__in=SYSTEM_RESERVED_ROLES)
-
-    def list(self, request, *args, **kwargs):
-        org_slug = request.query_params.get("org_slug", "").strip()
-
-        if not org_slug:
-            return Response(
-                {"detail": "org_slug query parameter is required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        try:
-            org = Organization.objects.select_related("profile").get(
-                slug=org_slug, is_active=True
-            )
-        except Organization.DoesNotExist:
-            return Response(
-                {"detail": "Organization not found. Please check the slug and try again."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
-        profile = getattr(org, "profile", None)
-        if not profile or not profile.name:
-            return Response(
-                {"detail": "This organization has not completed setup. Registration is currently unavailable."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        return super().list(request, *args, **kwargs)
+# FIX 13 (BUG 11): PublicRolesView deleted — it was dead code (never mounted in urls.py).
+# RolesListView in registration.py is the active view at /api/auth/roles/.
+# The org-profile completeness check has been moved to RolesListView (FIX 3).
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -338,5 +300,111 @@ class VerifyEmailView(APIView):
 
         return Response(
             {"detail": "Email verified! Your account is active. You can now log in."},
+            status=status.HTTP_200_OK,
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pre-registration Step A — Send OTP (email must be free, no user created yet)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SendOTPView(APIView):
+    """
+    POST /api/auth/send-otp/
+    Pre-registration email verification — Step A.
+    Generates and emails a 6-digit OTP cached under signup_otp:{email}.
+    Does NOT create a User. Returns 400 if the email already has an active account.
+    """
+    authentication_classes = []
+    permission_classes     = [AllowAny]
+
+    def post(self, request):
+        email = request.data.get("email", "").lower().strip()
+
+        if not email:
+            return Response(
+                {"detail": "email is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Reject if an active account already exists for this email —
+        # the OTP flow is only for brand-new registrations.
+        if User.objects.filter(email=email, is_active=True).exists():
+            return Response(
+                {"detail": "An account with this email already exists. Please log in instead."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Generate a fresh OTP, overwriting any previously cached one (allows resend).
+        otp       = _generate_otp()
+        cache_key = _otp_key(email)
+        OTP_CACHE.set(cache_key, otp, timeout=OTP_TTL)
+
+        # Dispatch email — uses the same HTML template as the old flow.
+        _dispatch_signup_otp(email, otp)
+
+        logger.info("Pre-registration OTP dispatched to %s", email)
+
+        return Response(
+            {"detail": "OTP sent to your email. Please verify within 5 minutes."},
+            status=status.HTTP_200_OK,
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pre-registration Step B — Verify OTP (single-use, pop from Redis)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class VerifyOTPView(APIView):
+    """
+    POST /api/auth/verify-otp/
+    Pre-registration email verification — Step B.
+    Pops the OTP from Redis (single-use). Returns { verified: true, email }
+    on success. Does NOT activate or create any User — verification only.
+    """
+    authentication_classes = []
+    permission_classes     = [AllowAny]
+
+    def post(self, request):
+        email     = request.data.get("email", "").lower().strip()
+        otp_input = request.data.get("otp", "").strip()
+
+        if not email or not otp_input:
+            return Response(
+                {"detail": "email and otp are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        cache_key  = _otp_key(email)
+        cached_otp = OTP_CACHE.get(cache_key)
+
+        if cached_otp is None:
+            return Response(
+                {"detail": "OTP has expired or was never issued. Please request a new one."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Constant-time comparison prevents timing attacks.
+        if not hmac.compare_digest(str(cached_otp), str(otp_input)):
+            return Response(
+                {"detail": "Invalid OTP. Please try again."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Valid — delete OTP immediately (single-use).
+        OTP_CACHE.delete(cache_key)
+
+        # FIX 1 (BUG 2): Write a short-lived "email verified" gate key.
+        # RegisterWizardView checks this key before creating a user — if it is
+        # absent (OTP not completed or TTL expired), registration is rejected.
+        # TTL is 10 minutes (VERIFIED_TTL) — long enough to finish the wizard.
+        OTP_CACHE.set(_verified_key(email), "1", timeout=VERIFIED_TTL)
+
+        logger.info("Pre-registration OTP verified for %s; verified gate key set (TTL=%ds)", email, VERIFIED_TTL)
+
+        # Return verified=True + email so the frontend can store the verified address
+        # and pre-fill it in the wizard. No User record is created here.
+        return Response(
+            {"verified": True, "email": email},
             status=status.HTTP_200_OK,
         )
