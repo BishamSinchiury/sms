@@ -46,23 +46,34 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
         data = super().validate(attrs)
         
+        try:
+            profile_complete = Person.objects.filter(user=self.user).exists()
+        except Exception:
+            profile_complete = False
+
         data['user'] = {
             "id": str(self.user.id),
             "email": self.user.email,
             "first_name": self.user.first_name,
             "last_name": self.user.last_name,
-            "profile_complete": hasattr(self.user, 'person') and self.user.person is not None,
+            "profile_complete": profile_complete,
         }
         
-        membership = getattr(self.user, "membership", None)
-        if membership:
+        try:
+            membership = self.user.membership
+            if membership and membership.org and not membership.org.is_active:
+                from rest_framework.exceptions import AuthenticationFailed
+                raise AuthenticationFailed("Your organization is currently inactive.")
+            
             data['user']['membership'] = {
                 "status": membership.status,
                 "role_type": membership.role.role_type if membership.role else None,
                 "role_name": membership.role.name if membership.role else None,
                 "org_name": membership.org.name if membership.org else None,
             }
-        else:
+        except AuthenticationFailed:
+            raise
+        except Exception:
             data['user']['membership'] = None
 
         return data
@@ -125,15 +136,29 @@ class CookieTokenRefreshView(TokenRefreshView):
         try:
             User = get_user_model()
             token_obj = RefreshToken(refresh_token)
-            user = User.objects.get(id=token_obj['user_id'])
-            profile_complete = Person.objects.filter(user=user).exists()
-            membership = getattr(user, "membership", None)
-            membership_status = membership.status if membership else None
-            role_type = membership.role.role_type if membership and membership.role else None
+            # Safe extraction of user id
+            user_id_claim = getattr(settings, 'SIMPLE_JWT', {}).get('USER_ID_CLAIM', 'user_id')
+            user_id = token_obj.payload.get(user_id_claim)
+            user = User.objects.get(id=user_id) if user_id else None
         except Exception:
-            profile_complete = False
-            membership_status = None
-            role_type = None
+            user = None
+
+        profile_complete = False
+        if user:
+            try:
+                profile_complete = Person.objects.filter(user=user).exists()
+            except Exception:
+                pass
+
+        membership_status = None
+        role_type = None
+        if user:
+            try:
+                membership = user.membership
+                membership_status = membership.status
+                role_type = membership.role.role_type if membership.role else None
+            except Exception:
+                pass
 
         response_data = {
             'access_token': access_token,

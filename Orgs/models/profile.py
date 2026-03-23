@@ -127,10 +127,16 @@ class OrganizationProfile(TimeStampedModel):
         help_text="Hero/banner image shown on the public landing page.",
     )
     primary_color = models.CharField(
+    max_length=7,
+    blank=True,
+    default="",
+    help_text="Primary hex color code for org branding. e.g. '#1A3C6E'",
+    )
+    secondary_color = models.CharField(
         max_length=7,
         blank=True,
         default="",
-        help_text="Hex color code for org branding. e.g. '#1A3C6E'",
+        help_text="Secondary hex color code for org branding. e.g. '#F59E0B'",
     )
 
     # ─────────────────────────────────────────────

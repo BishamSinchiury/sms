@@ -389,6 +389,13 @@ class SysAdminOTPVerifyView(APIView):
 
         org = membership.org
 
+        if not org.is_active:
+            logger.warning("SysAdmin OTP Verify: org '%s' is inactive.", org.slug)
+            return Response(
+                {"detail": "Your organization is currently inactive."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         # ── 5. Create Django session ──────────────────────────
         request.session.cycle_key()              # regenerate to prevent fixation
         request.session["user_id"]     = user.pk

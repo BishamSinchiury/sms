@@ -1,9 +1,14 @@
 from django.urls import path
-from .views import OrgProfileMeView
+from .views import OrgProfileMeView, OrgLegalMeView, OrgOwnerListCreateView, OrgOwnerDetailView
 from .views.sub_org_views import SubOrgListCreateView, SubOrgDetailView
 
 urlpatterns = [
-    path('profile/me/',        OrgProfileMeView.as_view(),      name='org-profile-me'),
-    path('sub-orgs/',          SubOrgListCreateView.as_view(),   name='sub-org-list-create'),
-    path('sub-orgs/<slug:code>/', SubOrgDetailView.as_view(),   name='sub-org-detail'),
+    path('me/',                 OrgProfileMeView.as_view(),      name='org-profile-me'),
+    path('profile/me/',         OrgProfileMeView.as_view(),      name='org-profile-me'),
+    path('legal/me/',           OrgLegalMeView.as_view(),        name='org-legal-me'),
+    path('sub-orgs/',           SubOrgListCreateView.as_view(),  name='sub-org-list-create'),
+    path('sub-orgs/<str:code>/', SubOrgDetailView.as_view(),      name='sub-org-detail'),
+    path("sys/owners/",          OrgOwnerListCreateView.as_view(), name="sys-owners-list"),
+    path("sys/owners/<int:pk>/", OrgOwnerDetailView.as_view(),     name="sys-owners-detail"),
+
 ]

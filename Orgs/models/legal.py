@@ -43,6 +43,8 @@ class AccreditationStatus(models.TextChoices):
     PENDING        = "pending",        "Pending"
     EXPIRED        = "expired",        "Expired"
     NOT_APPLICABLE = "not_applicable", "Not Applicable"
+    PROVISIONALLY_ACCREDITED= "provisionally_accredited", "Provisionally Accredited"
+
 
 
 class OrganizationLegal(TimeStampedModel):
@@ -62,37 +64,6 @@ class OrganizationLegal(TimeStampedModel):
         related_name="legal",
     )
 
-    # ─────────────────────────────────────────────
-    # Owner / Principal Identity
-    # ─────────────────────────────────────────────
-
-    owner_full_name = models.CharField(
-        max_length=255,
-        blank=True,
-        default="",
-        help_text="Full legal name of the school owner or principal.",
-    )
-    owner_title = models.CharField(
-        max_length=100,
-        blank=True,
-        default="",
-        help_text="Title/designation. e.g. 'Principal', 'Chairman', 'Director'",
-    )
-    owner_id_type = models.CharField(
-        max_length=50,
-        blank=True,
-        default="",
-        help_text="Type of ID provided. e.g. 'National ID', 'Passport'",
-    )
-    owner_id_number = models.CharField(
-        max_length=100,
-        blank=True,
-        default="",
-        help_text=(
-            "Owner's national ID or passport number. "
-            "SENSITIVE — encrypt at rest in production."
-        ),
-    )
 
     # ─────────────────────────────────────────────
     # School Registration
@@ -157,7 +128,7 @@ class OrganizationLegal(TimeStampedModel):
     # ─────────────────────────────────────────────
 
     accreditation_status = models.CharField(
-        max_length=20,
+        max_length=30,
         choices=AccreditationStatus.choices,
         default=AccreditationStatus.NOT_APPLICABLE,
     )

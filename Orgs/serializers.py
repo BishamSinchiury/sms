@@ -1,6 +1,41 @@
 from rest_framework import serializers
 from .models.profile import OrganizationProfile
+from .models.legal import OrganizationLegal
 from .models.sub_organization import SubOrganization
+from Orgs.models.owner import OrgOwner
+
+
+class OrganizationLegalSerializer(serializers.ModelSerializer):
+    """
+    Serializer for the private OrganizationLegal model.
+    Used exclusively by system admins via the sys dashboard.
+    """
+    legal_completion_percent = serializers.ReadOnlyField()
+    is_registration_expired = serializers.ReadOnlyField()
+    is_accreditation_expired = serializers.ReadOnlyField()
+
+    class Meta:
+        model = OrganizationLegal
+        fields = [
+            'registration_number',
+            'registration_date',
+            'registered_with',
+            'registration_document',
+            'registration_expiry',
+            'tax_id_number',
+            'vat_registered',
+            'vat_number',
+            'accreditation_status',
+            'accreditation_body',
+            'accreditation_number',
+            'accreditation_valid_from',
+            'accreditation_valid_until',
+            'accreditation_document',
+            'internal_notes',
+            'legal_completion_percent',
+            'is_registration_expired',
+            'is_accreditation_expired',
+        ]
 
 
 class OrganizationProfileSerializer(serializers.ModelSerializer):
@@ -27,6 +62,7 @@ class OrganizationProfileSerializer(serializers.ModelSerializer):
             'favicon',
             'cover_image',
             'primary_color',
+            'secondary_color',
             'address_line_1',
             'address_line_2',
             'city',
@@ -148,3 +184,131 @@ class OrgActivityLogSerializer(serializers.ModelSerializer):
             return obj.ip_address
         return None
 
+
+
+
+# Fields containing sensitive ID numbers — stripped from list responses,
+# returned only in detail (single instance) responses
+SENSITIVE_NUMBER_FIELDS = [
+    "pan_number",
+    "national_id_number",
+    "driving_license_number",
+    "passport_number",
+]
+
+
+class OrgOwnerSerializer(serializers.ModelSerializer):
+    """
+    Serializer for OrgOwner.
+
+    Sensitive number fields (pan_number, national_id_number, etc.):
+      - Always writable (POST / PATCH)
+      - Stripped from LIST responses
+      - Included in DETAIL (single instance) responses
+      - Views signal which context via context["detail"] = True/False
+
+    Document file fields:
+      - Writable as file uploads (multipart)
+      - Returned as URLs in responses when a file exists
+
+    user field:
+      - Returned as the user's email for readability
+      - Writable as a user PK (optional, nullable)
+    """
+
+    # Return user email in responses instead of raw PK for readability
+    user_email = serializers.SerializerMethodField(read_only=True)
+
+    # org is always set from request.sys_admin_org in the view
+    org = serializers.SlugRelatedField(
+        slug_field="slug",
+        read_only=True,
+    )
+
+    class Meta:
+        model = OrgOwner
+        fields = [
+            "id",
+            "org",
+            "user",
+            "user_email",
+            "full_legal_name",
+            "is_primary",
+            # PAN
+            "pan_number",
+            "pan_document",
+            # National ID
+            "national_id_number",
+            "national_id_document",
+            # Driving license
+            "driving_license_number",
+            "driving_license_document",
+            # Passport
+            "passport_number",
+            "passport_document",
+            # Ownership
+            "ownership_document",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "org", "user_email", "created_at", "updated_at"]
+        extra_kwargs = {
+            # user is optional — nullable FK
+            "user": {"required": False, "allow_null": True},
+            # Document files are optional
+            "pan_document":              {"required": False, "allow_null": True},
+            "national_id_document":      {"required": False, "allow_null": True},
+            "driving_license_document":  {"required": False, "allow_null": True},
+            "passport_document":         {"required": False, "allow_null": True},
+            "ownership_document":        {"required": False, "allow_null": True},
+        }
+
+    def get_user_email(self, obj):
+        # Safely return the linked user's email or None if no user linked
+        if obj.user_id:
+            return obj.user.email
+        return None
+
+    def to_representation(self, instance):
+        rep = super().to_representation(instance)
+
+        # Strip sensitive ID number fields from list responses
+        # Only include them when the view explicitly signals detail context
+        if not self.context.get("detail", False):
+            for field in SENSITIVE_NUMBER_FIELDS:
+                rep.pop(field, None)
+
+        return rep
+
+    def validate_full_legal_name(self, value):
+        if not value or not value.strip():
+            raise serializers.ValidationError("Full legal name is required.")
+        return value.strip()
+
+    def validate(self, attrs):
+        is_primary = attrs.get(
+            "is_primary",
+            # On PATCH, fall back to current value if not being changed
+            self.instance.is_primary if self.instance else False,
+        )
+
+        if is_primary:
+            org = self.context.get("org")
+            if org is None:
+                raise serializers.ValidationError(
+                    "Org context missing — this is a server configuration error."
+                )
+
+            conflict_qs = OrgOwner.objects.filter(org=org, is_primary=True)
+            if self.instance:
+                conflict_qs = conflict_qs.exclude(pk=self.instance.pk)
+
+            if conflict_qs.exists():
+                raise serializers.ValidationError({
+                    "is_primary": (
+                        "A primary owner already exists for this organization. "
+                        "Set the existing primary owner to non-primary first."
+                    )
+                })
+
+        return attrs

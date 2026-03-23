@@ -16,110 +16,34 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from Orgs.utils.logger import log_org_activity
+from Orgs.permissions import IsSysAdmin
 
 from Users.models.membership import OrgMembership, MembershipStatus
 from Orgs.models.organization import Organization
 from Orgs.models.profile import OrganizationProfile
-from Orgs.serializers import OrganizationProfileSerializer
+from Orgs.models.legal import OrganizationLegal
+from Orgs.serializers import OrganizationProfileSerializer, OrganizationLegalSerializer
+
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
+from rest_framework import status
+from Orgs.permissions import IsSysAdmin
+from Orgs.models.owner import OrgOwner
+from Orgs.serializers import OrgOwnerSerializer
 
 logger = logging.getLogger(__name__)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Shared permission helper
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _get_sys_admin_context(request):
-    """
-    Validates the incoming request is from an active system-admin session
-    that belongs to a real, active organisation.
-
-    Returns one of:
-        dict  — { "user": User, "org": Organization } on success
-        Response — 401/403 DRF Response on failure
-
-    Security checks (in order):
-    1. Session flag: session["is_sys_admin"] must be True.
-    2. Session data: org_slug and user_id must be present.
-    3. DB check: OrgMembership must exist with
-           is_system_admin=True + status=ACTIVE + org__slug matching session.
-       This is the critical guard: it ties the session claim to a real DB record
-       and ensures cross-org access is impossible even if session data is tampered.
-    4. Org is_active check.
-    """
-    from django.contrib.auth import get_user_model
-    User = get_user_model()
-
-    # ── 1. Session flag ───────────────────────────────────────────────────────
-    if not request.session.get("is_sys_admin"):
-        return Response(
-            {"detail": "System admin session required."},
-            status=status.HTTP_401_UNAUTHORIZED,
-        )
-
-    org_slug = request.session.get("org_slug")
-    user_id  = request.session.get("user_id")
-
-    if not org_slug or not user_id:
-        return Response(
-            {"detail": "Session is incomplete. Please log in again."},
-            status=status.HTTP_401_UNAUTHORIZED,
-        )
-
-    # ── 2. Verify user + membership in DB ────────────────────────────────────
-    try:
-        membership = (
-            OrgMembership.objects
-            .select_related("user", "org")
-            .get(
-                user_id=user_id,
-                is_system_admin=True,
-                status=MembershipStatus.ACTIVE,
-                org__slug=org_slug,        # ← org-ownership check
-            )
-        )
-    except OrgMembership.DoesNotExist:
-        logger.warning(
-            "Sys-admin permission denied: user_id=%s has no active system-admin "
-            "membership for org '%s'.", user_id, org_slug
-        )
-        request.session.flush()  # Invalidate stale/tampered session
-        return Response(
-            {"detail": "Access denied. Your session is no longer valid."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
-
-    # ── 3. Org must be active ─────────────────────────────────────────────────
-    if not membership.org.is_active:
-        return Response(
-            {"detail": "Your organisation is currently inactive."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
-
-    return {"user": membership.user, "org": membership.org}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Views
-# ─────────────────────────────────────────────────────────────────────────────
 
 class OrgProfileMeView(APIView):
     """
     GET  /api/org/profile/me/   — Retrieve own org's profile
     PATCH /api/org/profile/me/  — Partial update own org's profile
-
     Both methods are scoped to the org stored in the session.
     Cross-org access is impossible by design.
     """
     authentication_classes = []
-    permission_classes     = []
+    permission_classes     = [IsSysAdmin]
 
     def get(self, request):
-        ctx = _get_sys_admin_context(request)
-        if isinstance(ctx, Response):
-            return ctx
-
-        org = ctx["org"]
+        org = request.sys_admin_org
 
         profile = getattr(org, "profile", None)
         if not profile:
@@ -138,11 +62,7 @@ class OrgProfileMeView(APIView):
         Partial update — supports multipart/form-data for image uploads.
         Only the sys-admin of THIS org can call this.
         """
-        ctx = _get_sys_admin_context(request)
-        if isinstance(ctx, Response):
-            return ctx
-
-        org = ctx["org"]
+        org = request.sys_admin_org
 
         profile, _ = OrganizationProfile.objects.get_or_create(org=org)
 
@@ -167,7 +87,7 @@ class OrgProfileMeView(APIView):
 
             log_org_activity(
                 org=org,
-                actor=ctx.get("user"),
+                actor=request.sys_admin_user,
                 category="org_changes",
                 severity="info",
                 action="Organization profile updated",
@@ -182,3 +102,208 @@ class OrgProfileMeView(APIView):
             return Response(serializer.data)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class OrgLegalMeView(APIView):
+    """
+    GET  /api/org/legal/me/   — Retrieve own org's legal config
+    PATCH /api/org/legal/me/  — Partial update own org's legal config
+
+    Scoped to the org stored in the session by IsSysAdmin.
+    """
+    authentication_classes = []
+    permission_classes     = [IsSysAdmin]
+
+    def get(self, request):
+        org = request.sys_admin_org
+
+        legal = getattr(org, "legal", None)
+        if not legal:
+            return Response(
+                {"detail": "Organisation legal configuration not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = OrganizationLegalSerializer(
+            legal, context={"request": request}
+        )
+        return Response(serializer.data)
+
+    def patch(self, request):
+        org = request.sys_admin_org
+
+        legal, _ = OrganizationLegal.objects.get_or_create(org=org)
+
+        serializer = OrganizationLegalSerializer(
+            legal,
+            data=request.data,
+            partial=True,
+            context={"request": request},
+        )
+        if serializer.is_valid():
+            serializer.save()
+
+            log_org_activity(
+                org=org,
+                actor=request.sys_admin_user,
+                category="org_changes",
+                severity="warning", # compliance changes usually warn
+                action="Organization legal config updated",
+                request=request
+            )
+
+            logger.info(
+                "OrgLegal updated: org='%s' by user_id=%s",
+                org.slug, request.session.get("user_id"),
+            )
+            return Response(serializer.data)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+
+
+class OrgOwnerListCreateView(APIView):
+    """
+    GET  /api/sys/owners/
+        List all owners for the session org.
+        Sensitive ID numbers are excluded from list responses.
+
+    POST /api/sys/owners/
+        Create a new owner for the session org.
+        Accepts multipart/form-data for document file uploads.
+
+    Org is always request.sys_admin_org — attached by IsSysAdmin.
+    Never read org from request.data or URL kwargs.
+    """
+
+    permission_classes = [IsSysAdmin]
+    # Accept both multipart (file uploads) and JSON
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get(self, request):
+        org = request.sys_admin_org
+
+        owners = OrgOwner.objects.filter(org=org).select_related(
+            "user"  # avoid N+1 on user_email field
+        ).order_by("-is_primary", "full_legal_name")
+
+        serializer = OrgOwnerSerializer(
+            owners,
+            many=True,
+            context={
+                "request": request,
+                "org": org,
+                "detail": False,  # sensitive numbers excluded in list
+            },
+        )
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        org = request.sys_admin_org
+
+        serializer = OrgOwnerSerializer(
+            data=request.data,
+            context={
+                "request": request,
+                "org": org,
+                "detail": True,  # return full data including numbers on create
+            },
+        )
+
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        # org is always forced from session — client cannot supply it
+        serializer.save(org=org)
+
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class OrgOwnerDetailView(APIView):
+    """
+    GET    /api/sys/owners/<pk>/   — retrieve single owner (includes ID numbers)
+    PATCH  /api/sys/owners/<pk>/   — partial update, supports file uploads
+    DELETE /api/sys/owners/<pk>/   — delete (primary owner blocked)
+
+    Cross-org access returns 404 not 403 to avoid leaking record existence.
+    Org is always request.sys_admin_org — never from URL or request body.
+    """
+    permission_classes = [IsSysAdmin]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def _get_owner(self, pk, org):
+        """
+        Fetch owner scoped strictly to org.
+        Returns None if not found or belongs to a different org.
+        """
+        try:
+            return OrgOwner.objects.select_related("user").get(pk=pk, org=org)
+        except OrgOwner.DoesNotExist:
+            return None
+
+    def get(self, request, pk):
+        org = request.sys_admin_org
+        owner = self._get_owner(pk, org)
+
+        if owner is None:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = OrgOwnerSerializer(
+            owner,
+            context={
+                "request": request,
+                "org": org,
+                "detail": True,  # sensitive ID numbers included in detail
+            },
+        )
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def patch(self, request, pk):
+        org = request.sys_admin_org
+        owner = self._get_owner(pk, org)
+
+        if owner is None:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = OrgOwnerSerializer(
+            owner,
+            data=request.data,
+            partial=True,  # PATCH — only update provided fields
+            context={
+                "request": request,
+                "org": org,
+                "detail": True,
+            },
+        )
+
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        # org is read_only in the serializer — cannot be overwritten by client
+        serializer.save()
+
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def delete(self, request, pk):
+        org = request.sys_admin_org
+        owner = self._get_owner(pk, org)
+
+        if owner is None:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if owner.is_primary:
+            return Response(
+                {
+                    "detail": (
+                        "Cannot delete the primary owner. "
+                        "Assign another owner as primary first, "
+                        "then delete this one."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        owner.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)

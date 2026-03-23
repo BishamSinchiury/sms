@@ -18,8 +18,7 @@ from rest_framework.views import APIView
 from Orgs.models.sub_organization import SubOrganization
 from Orgs.serializers import SubOrganizationSerializer, SubOrganizationWriteSerializer
 
-# Reuse the shared auth helper from the parent views module
-from Orgs.views import _get_sys_admin_context
+from Orgs.permissions import IsSysAdmin
 from Orgs.utils.logger import log_org_activity
 
 logger = logging.getLogger(__name__)
@@ -34,14 +33,10 @@ class SubOrgListCreateView(APIView):
         ?include_inactive=true   — also return inactive sub-orgs (default: active only)
     """
     authentication_classes = []
-    permission_classes     = []
+    permission_classes     = [IsSysAdmin]
 
     def get(self, request):
-        ctx = _get_sys_admin_context(request)
-        if isinstance(ctx, Response):
-            return ctx
-
-        org = ctx["org"]
+        org = request.sys_admin_org
         qs  = SubOrganization.objects.filter(parent_org=org)
 
         if request.query_params.get("include_inactive") != "true":
@@ -51,11 +46,7 @@ class SubOrgListCreateView(APIView):
         return Response(serializer.data)
 
     def post(self, request):
-        ctx = _get_sys_admin_context(request)
-        if isinstance(ctx, Response):
-            return ctx
-
-        org = ctx["org"]
+        org = request.sys_admin_org
 
         serializer = SubOrganizationWriteSerializer(
             data=request.data,
@@ -64,7 +55,7 @@ class SubOrgListCreateView(APIView):
         if serializer.is_valid():
             sub_org = serializer.save(parent_org=org)
             log_org_activity(
-                org=org, actor=ctx.get("user"), category="system", severity="info",
+                org=org, actor=request.sys_admin_user, category="system", severity="info",
                 action=f"Sub-organization '{sub_org.name}' created", request=request
             )
             logger.info(
@@ -86,34 +77,24 @@ class SubOrgDetailView(APIView):
     DELETE /api/org/sub-orgs/<code>/   — Soft-delete (sets is_active=False).
     """
     authentication_classes = []
-    permission_classes     = []
+    permission_classes     = [IsSysAdmin]
 
     def _get_sub_org(self, request, code):
-        """Validate session and return (ctx, sub_org) or a Response error."""
-        ctx = _get_sys_admin_context(request)
-        if isinstance(ctx, Response):
-            return ctx, None
-
-        sub_org = get_object_or_404(
+        """Helper to fetch sub_org ensuring it belongs to the sys admin's org."""
+        return get_object_or_404(
             SubOrganization,
             code=code,
-            parent_org=ctx["org"],   # ← org-ownership check
+            parent_org=request.sys_admin_org,   # ← org-ownership check
         )
-        return ctx, sub_org
 
     def get(self, request, code):
-        ctx, sub_org = self._get_sub_org(request, code)
-        if sub_org is None:
-            return ctx   # ctx is the error Response
-
+        sub_org = self._get_sub_org(request, code)
         return Response(SubOrganizationSerializer(sub_org).data)
 
     def patch(self, request, code):
-        ctx, sub_org = self._get_sub_org(request, code)
-        if sub_org is None:
-            return ctx
+        sub_org = self._get_sub_org(request, code)
+        org = request.sys_admin_org
 
-        org = ctx["org"]
         serializer = SubOrganizationWriteSerializer(
             sub_org,
             data=request.data,
@@ -132,15 +113,13 @@ class SubOrgDetailView(APIView):
 
     def delete(self, request, code):
         """Soft-delete: sets is_active=False instead of hard-deleting."""
-        ctx, sub_org = self._get_sub_org(request, code)
-        if sub_org is None:
-            return ctx
+        sub_org = self._get_sub_org(request, code)
+        org = request.sys_admin_org
 
-        org = ctx["org"]
         sub_org.is_active = False
         sub_org.save(update_fields=["is_active", "updated_at"])
         log_org_activity(
-            org=org, actor=ctx.get("user"), category="system", severity="warning",
+            org=org, actor=request.sys_admin_user, category="system", severity="warning",
             action=f"Sub-organization '{code}' deactivated", request=request
         )
         logger.info(
