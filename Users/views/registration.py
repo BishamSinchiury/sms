@@ -49,9 +49,6 @@ class RolesListView(generics.ListAPIView):
         if not org_slug:
             return Response({"detail": "org query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # FIX 3 (BUG 1): Validate org profile completeness before returning roles.
-        # Previously this check only lived in the dead PublicRolesView (auth_views.py).
-        # Users can now only browse roles for orgs that have completed their setup.
         try:
             org = Organization.objects.select_related("profile").get(slug=org_slug, is_active=True)
         except Organization.DoesNotExist:
@@ -80,9 +77,6 @@ class RegisterWizardView(generics.CreateAPIView):
     serializer_class = RegisterRoleAwareSerializer
 
     def create(self, request, *args, **kwargs):
-        # FIX 1 (BUG 2): Enforce server-side OTP gate before any validation.
-        # VerifyOTPView writes 'signup_email_verified:{email}' to Redis on success.
-        # Without this check, any caller could POST directly and bypass OTP entirely.
         raw_email = request.data.get("email", "").lower().strip()
         if not raw_email:
             return Response(
@@ -96,13 +90,12 @@ class RegisterWizardView(generics.CreateAPIView):
                 {"detail": "Email not verified. Please complete OTP verification first."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-
+        
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
+        
 
-        # FIX 1 (BUG 2): Consume the verified-email gate key (single-use).
-        # A verified email cannot be reused to register a second account.
         OTP_CACHE.delete(verified_key)
 
         # Generate tokens for the new user auto-login
@@ -111,10 +104,6 @@ class RegisterWizardView(generics.CreateAPIView):
         refresh_token = str(refresh)
         membership = getattr(user, "membership", None)
 
-        # FIX 10 (BUG 10): profile_complete now means "user has submitted their
-        # profile" (i.e. membership is no longer PENDING), not just "Person exists".
-        # After registration, status is always PENDING, so this is always False here.
-        # This is correct: the user still needs to fill their profile wizard.
         profile_complete = (
             membership.status != MembershipStatus.PENDING
             if membership else False

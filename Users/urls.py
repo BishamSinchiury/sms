@@ -1,11 +1,9 @@
+# ── BE/Users/urls.py ──
+
 """
 Users/urls.py
 -------------
 URL routing for the Users app.
-
-Namespaces
-----------
-/api/sys/auth/   — System admin session-based two-step login
 """
 
 from django.urls import path
@@ -16,12 +14,18 @@ from Users.views.sys_auth_views import (
     SysAdminLogoutView,
     SysAdminMeView,
 )
-# Import the old post-registration verify view + two new pre-registration OTP views
 from Users.views.auth_views import VerifyEmailView, SendOTPView, VerifyOTPView
 from Users.views.user_views import UserProfileUpdateView
 from Users.views.sys_user_views import PendingUsersListView, ApproveUserView, RejectUserView
+from Users.views.sys_role_views import RoleListCreateView, RoleDetailView
 from Users.views.registration import RegisterWizardView, RolesListView
-from Users.views.profile import MyProfileView, MyDocumentsView, MyGuardiansView
+# Added MyDocumentDetailView for DELETE /profile/me/documents/<id>/
+from Users.views.profile import (
+    MyProfileView,
+    MyDocumentsView,
+    MyDocumentDetailView,
+    MyGuardiansView,
+)
 from Users.models.person import Person
 
 from Orgs.views.activity_log_views import (
@@ -30,31 +34,23 @@ from Orgs.views.activity_log_views import (
     OrgActivityLogActorsView
 )
 
-from rest_framework_simplejwt.views import (
-    TokenObtainPairView,
-    TokenRefreshView,
-)
-from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenRefreshSerializer
-from rest_framework_simplejwt.exceptions import InvalidToken
-from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from rest_framework_simplejwt.tokens import RefreshToken, AccessToken
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import AllowAny
-# FIX 9 (BUG 7+18): AuthenticationFailed must be at top-level.
-# Previously imported inside a try-block, causing NameError in the corresponding except clause.
 from rest_framework.exceptions import AuthenticationFailed
 from django.conf import settings
 from django.contrib.auth import get_user_model
 
-from Users.models.membership import MembershipStatus  # FIX 10 (BUG 10)
+from Users.models.membership import MembershipStatus
+
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
         data = super().validate(attrs)
 
-        # FIX 10 (BUG 10): profile_complete is now based on membership status,
-        # not whether a Person record exists. This makes it meaningful:
-        # False = profile not yet submitted (PENDING), True = submitted (any other status).
         membership = None
         membership_status = None
         try:
@@ -77,7 +73,6 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         }
 
         try:
-            # FIX 9 (BUG 7+18): AuthenticationFailed is now imported at module top.
             if membership and membership.org and not membership.org.is_active:
                 raise AuthenticationFailed("Your organization is currently inactive.")
 
@@ -94,6 +89,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
         return data
 
+
 class CookieTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
 
@@ -101,102 +97,98 @@ class CookieTokenObtainPairView(TokenObtainPairView):
         response = super().post(request, *args, **kwargs)
         if response.status_code == 200:
             refresh_token = response.data.get('refresh')
-            access_token = response.data.get('access')
-            user_data = response.data.get('user', {})
-            membership = user_data.get('membership') or {}
-            
+            access_token  = response.data.get('access')
+            user_data      = response.data.get('user', {})
+            membership     = user_data.get('membership') or {}
+
             new_data = {
-                'access_token': access_token,
-                'profile_complete': user_data.get('profile_complete', False),
+                'access_token':      access_token,
+                'profile_complete':  user_data.get('profile_complete', False),
                 'membership_status': membership.get('status'),
-                'role_type': membership.get('role_type'),
+                'role_type':         membership.get('role_type'),
             }
             response.data = new_data
-            
+
             if refresh_token:
                 cookie_name = getattr(settings, 'SIMPLE_JWT', {}).get('AUTH_COOKIE', 'refresh_token')
                 response.set_cookie(
-                    cookie_name,
-                    refresh_token,
+                    cookie_name, refresh_token,
                     max_age=7 * 24 * 60 * 60,
-                    httponly=True,
-                    samesite='Lax',
-                    secure=False
+                    httponly=True, samesite='Lax', secure=False,
                 )
         return response
 
+
 class CookieTokenRefreshView(TokenRefreshView):
     def post(self, request, *args, **kwargs):
-        cookie_name = getattr(settings, 'SIMPLE_JWT', {}).get('AUTH_COOKIE', 'refresh_token')
+        cookie_name   = getattr(settings, 'SIMPLE_JWT', {}).get('AUTH_COOKIE', 'refresh_token')
         refresh_token = request.COOKIES.get(cookie_name)
-        
-        if not refresh_token:
-            return Response(
-                {"detail": "No active session. Please log in."},
-                status=400
-            )
 
-        data = {}
-        if refresh_token:
-            data['refresh'] = refresh_token
-            
-        serializer = self.get_serializer(data=data)
+        if not refresh_token:
+            return Response({"detail": "No active session. Please log in."}, status=400)
+
+        serializer = self.get_serializer(data={'refresh': refresh_token})
         try:
             serializer.is_valid(raise_exception=True)
         except Exception as e:
             return Response({"detail": str(e)}, status=400)
-            
-        new_refresh = serializer.validated_data.get('refresh')
+
+        new_refresh  = serializer.validated_data.get('refresh')
         access_token = serializer.validated_data.get('access')
-        
+
+        # Decode the NEW access_token — the old refresh_token is already
+        # blacklisted by SimpleJWT rotation so decoding it raises TokenError.
+        user = None
         try:
-            User = get_user_model()
-            token_obj = RefreshToken(refresh_token)
-            # Safe extraction of user id
+            User          = get_user_model()
+            token_obj     = AccessToken(access_token)
             user_id_claim = getattr(settings, 'SIMPLE_JWT', {}).get('USER_ID_CLAIM', 'user_id')
-            user_id = token_obj.payload.get(user_id_claim)
-            user = User.objects.get(id=user_id) if user_id else None
-        except Exception:
+            user_id       = token_obj.payload.get(user_id_claim)
+            user          = User.objects.select_related(
+                'membership', 'membership__role', 'membership__org'
+            ).get(id=user_id) if user_id else None
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning('CookieTokenRefreshView user fetch failed: %s', e)
             user = None
 
-        # FIX 10 (BUG 10): profile_complete based on membership status, not Person.exists()
-        profile_complete = False
+        profile_complete  = False
         membership_status = None
-        role_type = None
+        role_type         = None
+
         if user:
             try:
-                membership = user.membership
+                membership        = user.membership
                 membership_status = membership.status
-                role_type = membership.role.role_type if membership.role else None
-                profile_complete = membership_status is not None and membership_status != MembershipStatus.PENDING
+                role_type         = membership.role.role_type if membership.role else None
+                profile_complete  = (
+                    membership_status is not None
+                    and membership_status != MembershipStatus.PENDING
+                )
             except Exception:
                 pass
 
-        response_data = {
-            'access_token': access_token,
-            'profile_complete': profile_complete,
+        response = Response({
+            'access_token':      access_token,
+            'profile_complete':  profile_complete,
             'membership_status': membership_status,
-            'role_type': role_type,
-        }
-        
-        response = Response(response_data, status=200)
+            'role_type':         role_type,
+        }, status=200)
 
         if new_refresh:
             response.set_cookie(
-                cookie_name,
-                new_refresh,
+                cookie_name, new_refresh,
                 max_age=7 * 24 * 60 * 60,
-                httponly=True,
-                samesite='Lax',
-                secure=False
+                httponly=True, samesite='Lax', secure=False,
             )
         return response
+
 
 class CookieTokenLogoutView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        cookie_name = getattr(settings, 'SIMPLE_JWT', {}).get('AUTH_COOKIE', 'refresh_token')
+        cookie_name   = getattr(settings, 'SIMPLE_JWT', {}).get('AUTH_COOKIE', 'refresh_token')
         refresh_token = request.COOKIES.get(cookie_name)
         if refresh_token:
             try:
@@ -204,47 +196,47 @@ class CookieTokenLogoutView(APIView):
                 token.blacklist()
             except Exception:
                 pass
-        
+
         response = Response({"detail": "Successfully logged out."}, status=200)
         response.delete_cookie(cookie_name)
         return response
 
+
 urlpatterns = [
     # ── System admin authentication (session + OTP) ──────────────────────
-    # Step 1: Submit email + password → OTP dispatched to admin
-    path("sys/auth/login/",       SysAdminLoginView.as_view(),     name="sys-auth-login"),
-    # Step 2: Submit email + OTP → session created
-    path("sys/auth/verify-otp/",  SysAdminOTPVerifyView.as_view(), name="sys-auth-verify-otp"),
-    # Logout: flush session + mark audit record inactive
-    path("sys/auth/logout/",      SysAdminLogoutView.as_view(),    name="sys-auth-logout"),
-    # Me: check active session cookie → returns identity (used on page refresh)
-    path("sys/auth/me/",          SysAdminMeView.as_view(),        name="sys-auth-me"),
+    path("sys/auth/login/",             SysAdminLoginView.as_view(),     name="sys-auth-login"),
+    path("sys/auth/verify-otp/",        SysAdminOTPVerifyView.as_view(), name="sys-auth-verify-otp"),
+    path("sys/auth/logout/",            SysAdminLogoutView.as_view(),    name="sys-auth-logout"),
+    path("sys/auth/me/",                SysAdminMeView.as_view(),        name="sys-auth-me"),
 
     # ── System admin activity logs ───────────────────────────────────────
-    path("sys/logs/",             OrgActivityLogListView.as_view(),   name="sys-logs-list"),
-    path("sys/logs/export/",      OrgActivityLogExportView.as_view(), name="sys-logs-export"),
-    path("sys/logs/actors/",      OrgActivityLogActorsView.as_view(), name="sys-logs-actors"),
+    path("sys/logs/",                   OrgActivityLogListView.as_view(),   name="sys-logs-list"),
+    path("sys/logs/export/",            OrgActivityLogExportView.as_view(), name="sys-logs-export"),
+    path("sys/logs/actors/",            OrgActivityLogActorsView.as_view(), name="sys-logs-actors"),
 
     # ── System admin user management ─────────────────────────────────────
-    path("sys/users/pending/",    PendingUsersListView.as_view(),  name="sys-users-pending"),
-    path("sys/users/<int:pk>/approve/", ApproveUserView.as_view(), name="sys-users-approve"),
-    path("sys/users/<int:pk>/reject/",  RejectUserView.as_view(),  name="sys-users-reject"),
+    path("sys/users/pending/",          PendingUsersListView.as_view(),  name="sys-users-pending"),
+    path("sys/users/<int:pk>/approve/", ApproveUserView.as_view(),       name="sys-users-approve"),
+    path("sys/users/<int:pk>/reject/",  RejectUserView.as_view(),        name="sys-users-reject"),
+
+    # ── System admin role management ─────────────────────────────────────
+    path("sys/roles/",                  RoleListCreateView.as_view(),    name="sys-roles-list"),
+    path("sys/roles/<uuid:pk>/",        RoleDetailView.as_view(),        name="sys-roles-detail"),
 
     # ── General User authentication (JWT) ────────────────────────────────
-    path("auth/login/",           CookieTokenObtainPairView.as_view(), name="token_obtain_pair"),
-    path("auth/refresh/",         CookieTokenRefreshView.as_view(),    name="token_refresh"),
-    path("auth/logout/",          CookieTokenLogoutView.as_view(),     name="token_logout"),
-    path("auth/register/",        RegisterWizardView.as_view(),    name="auth-register"),
-    path("auth/verify-email/",    VerifyEmailView.as_view(),       name="auth-verify-email"),
-    # Pre-registration OTP flow — Step A: generate + email OTP; Step B: validate + return verified
-    path("auth/send-otp/",        SendOTPView.as_view(),           name="auth-send-otp"),
-    path("auth/verify-otp/",      VerifyOTPView.as_view(),         name="auth-verify-otp"),
-    path("auth/roles/",           RolesListView.as_view(),         name="auth-roles"),
+    path("auth/login/",                 CookieTokenObtainPairView.as_view(), name="token_obtain_pair"),
+    path("auth/refresh/",               CookieTokenRefreshView.as_view(),    name="token_refresh"),
+    path("auth/logout/",                CookieTokenLogoutView.as_view(),     name="token_logout"),
+    path("auth/register/",              RegisterWizardView.as_view(),        name="auth-register"),
+    path("auth/verify-email/",          VerifyEmailView.as_view(),           name="auth-verify-email"),
+    path("auth/send-otp/",              SendOTPView.as_view(),               name="auth-send-otp"),
+    path("auth/verify-otp/",            VerifyOTPView.as_view(),             name="auth-verify-otp"),
+    path("auth/roles/",                 RolesListView.as_view(),             name="auth-roles"),
 
     # ── General User Profile ─────────────────────────────────────────────
-    path("profile/me/",                   MyProfileView.as_view(),   name="profile-me"),
-    path("profile/me/documents/",         MyDocumentsView.as_view(), name="profile-me-documents"),
-    path("profile/me/guardians/",         MyGuardiansView.as_view(), name="profile-me-guardians"),
-    path("users/me/profile/",             UserProfileUpdateView.as_view(), name="user-profile-update"),
+    path("profile/me/",                         MyProfileView.as_view(),        name="profile-me"),
+    path("profile/me/documents/",               MyDocumentsView.as_view(),      name="profile-me-documents"),
+    path("profile/me/documents/<uuid:pk>/",     MyDocumentDetailView.as_view(), name="profile-me-document-detail"),
+    path("profile/me/guardians/",               MyGuardiansView.as_view(),      name="profile-me-guardians"),
+    path("users/me/profile/",                   UserProfileUpdateView.as_view(),name="user-profile-update"),
 ]
-

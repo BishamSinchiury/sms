@@ -309,3 +309,5 @@ class OrgOwnerDetailView(APIView):
 
         owner.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+from .domain_views import DomainListCreateView, DomainDetailView

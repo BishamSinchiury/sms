@@ -329,7 +329,7 @@ class SendOTPView(APIView):
 
         # Reject if an active account already exists for this email —
         # the OTP flow is only for brand-new registrations.
-        if User.objects.filter(email=email, is_active=True).exists():
+        if User.objects.filter(email=email).exists():
             return Response(
                 {"detail": "An account with this email already exists. Please log in instead."},
                 status=status.HTTP_400_BAD_REQUEST,

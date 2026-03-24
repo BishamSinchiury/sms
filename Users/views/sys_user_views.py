@@ -18,13 +18,28 @@ class PendingUserSerializer(serializers.ModelSerializer):
     first_name = serializers.CharField(source="user.first_name", read_only=True)
     last_name = serializers.CharField(source="user.last_name", read_only=True)
     phone_number = serializers.CharField(source="user.phone_number", read_only=True)
+    gender = serializers.CharField(source="user.person.gender", read_only=True, default=None)
     role_name = serializers.CharField(source="role.name", read_only=True)
+    role_type = serializers.CharField(source="role.role_type", read_only=True)
     status = serializers.CharField(read_only=True)
+    photo_url = serializers.SerializerMethodField()
 
     class Meta:
         model = OrgMembership
-        fields = ["id", "email", "first_name", "last_name", "phone_number", "role_name", "status", "created_at"]
+        fields = ["id", "email", "first_name", "last_name", "phone_number", "gender", "role_name", "role_type", "status", "created_at", "photo_url"]
 
+    def get_photo_url(self, obj):
+        try:
+            person = obj.user.person
+            request = self.context.get('request')
+            if person.photo:
+                return request.build_absolute_uri(person.photo.url) if request else person.photo.url
+            first_doc = person.identity_documents.first()
+            if first_doc and first_doc.front_image:
+                return request.build_absolute_uri(first_doc.front_image.url) if request else first_doc.front_image.url
+        except Exception:
+            pass
+        return None
 class PendingUsersListView(generics.ListAPIView):
     """
     Lists users waiting for approval (or pending overall).
@@ -48,7 +63,7 @@ class PendingUsersListView(generics.ListAPIView):
         return OrgMembership.objects.filter(
             org=membership.org, 
             status__in=[MembershipStatus.PENDING, MembershipStatus.WAITING_APPROVAL]
-        ).select_related("user", "role")
+        ).select_related("user", "role", "user__person").prefetch_related("user__person__identity_documents")
 
 class ApproveUserView(APIView):
     """
